@@ -1,15 +1,15 @@
 import { assert } from "./util";
 
 type Tensor = number;
-type Insn = [string, ...any[]];
+class Insn { constructor(public op: string, public args: any[]) { } toString() { return `Insn(${this.op}: ${this.args.join(", ")})`; } };
 
 
 function add(x: Tensor, y: Tensor) {
-    return ["add", x, y];
+    return new Insn("add", [x, y]);
 }
 
 function mul(x: Tensor, y: Tensor) {
-    return ["mul", x, y];
+    return new Insn("mul", [x, y]);
 }
 
 function* userland(x: Tensor): Generator<any, any, any> {
@@ -25,7 +25,7 @@ function EvalInterpreter(f: Function, ...args: any[]) {
     const it = f(...args);
     let next = it.next();
     while (!next.done) {
-        const [op, ...args] = next.value as Insn;
+        const { op, args } = next.value as Insn;
         switch (op) {
             case "add": {
                 next = it.next(args.reduce((a, b) => a + b, 0));
@@ -46,21 +46,21 @@ class Dual {
     constructor(public interpreter: any, public primal: Tensor, public tangent: Tensor = 0.0) { }
 }
 
-function* JVPInterpreter(f: Function, primals: Tensor[], tangents: Tensor[]) {
-    let thisInterpreter = this;
+function* JVPInterpreter(f: Function, ...args: Dual[]) {
+    let thisInterpreter = null;
     const lift = (p: Tensor | Dual, t: Tensor) => {
-        if (p instanceof Dual && p.interpreter == thisInterpreter) {
+        if (p instanceof Dual /* && p.interpreter == thisInterpreter */) {
             return p;
         } else if (typeof p === "number") {
             return new Dual(thisInterpreter, p, t);
         }
-        throw new Error("Invalid argument");
+        throw new Error("Invalid argument:" + p);
     }
 
-    const it = f(...primals.map((a, i) => lift(a, tangents[i])));
+    const it = f(...args);
     let next = it.next();
     while (!next.done) {
-        const [op, ...args] = next.value as Insn;
+        const { op, args } = next.value as Insn;
         const liftedArgs = args.map(a => lift(a, 0.0));
         switch (op) {
             case "add": {
@@ -69,8 +69,8 @@ function* JVPInterpreter(f: Function, primals: Tensor[], tangents: Tensor[]) {
                 next = it.next(new Dual(
                     thisInterpreter,
                     yield add(x.primal, y.primal),
-                    yield add(x.tangent, y.tangent
-                    )));
+                    yield add(x.tangent, y.tangent)
+                ));
             }; break;
             case "mul": {
                 const [x, y] = liftedArgs;
@@ -78,8 +78,8 @@ function* JVPInterpreter(f: Function, primals: Tensor[], tangents: Tensor[]) {
                 next = it.next(new Dual(
                     thisInterpreter,
                     yield mul(x.primal, y.primal),
-                    yield add(yield mul(x.primal, y.tangent), yield mul(y.primal, x.tangent
-                    ))));
+                    yield add(yield mul(x.primal, y.tangent), yield mul(y.primal, x.tangent)
+                    )));
             }; break;
             default: {
                 throw new Error(`Invalid operation: ${op}`);
@@ -95,7 +95,32 @@ function* JVPInterpreter(f: Function, primals: Tensor[], tangents: Tensor[]) {
 
 class VReg { constructor(public ident: string) { } toString() { return `VReg(${this.ident})`; } };
 class Equation { constructor(public lhs: VReg, public rhs: Insn) { } toString() { return `Equation(${this.lhs.toString()} = ${this.rhs.toString()})`; } };
-function StagingInterpreter(f: typeof userland, numArgs: number) {
+class Jaxpr {
+    parameters: VReg[];
+    equations: Equation[];
+    returnVal: VReg;
+
+    constructor(parameters: VReg[], equations: Equation[], returnVal: VReg) {
+        this.parameters = parameters;
+        this.equations = equations;
+        this.returnVal = returnVal;
+    }
+
+    toString() {
+        const lines = [];
+        const parameterList = this.parameters.join(", ");
+        lines.push(`(define (${parameterList})`)
+        let i = 0;
+        for (const eqn of this.equations) {
+            lines.push(`\t${i.toString().padStart(5, "0")}: ${eqn.lhs.toString()} = ${eqn.rhs.toString()}`);
+            i++;
+        }
+        lines.push(`\treturn ${this.returnVal}`);
+        lines.push(")")
+        return lines.join("\n");
+    }
+}
+function StagingInterpreter(f: Function, numArgs: number) {
     let symbolCounter = 0;
     const inputs = Array.from({ length: numArgs }, () => new VReg(`x${symbolCounter++}`));
     let trace = [];
@@ -106,46 +131,38 @@ function StagingInterpreter(f: typeof userland, numArgs: number) {
         trace.push(new Equation(binder, next.value as Insn));
         next = it.next(binder);
     }
-    return trace;
+    return new Jaxpr(inputs, trace, next.value);
 }
 
-
-
-
-// function* f(x: Object): Generator<number, number, string> {
-//     console.log("begin");
-//     console.log("1. ", yield 1);
-//     console.log("2. ", yield 2);
-//     console.log("3. ", yield 3);
-//     return 4;
-// }
-
-
 const main = () => {
+
+    /* Simple trace */
     // const trace = StagingInterpreter(userland, 1);
     // for (let eqn of trace) {
     //     console.log(eqn.toString());
     // }
 
+    /* Simple eval */
     // const result = EvalInterpreter(userland, 2.0);
     // console.log(result);
 
-    const it = EvalInterpreter(
-        JVPInterpreter,
-        userland,
-        [2.0],
-        [1.0]
+    /* Simple JVP, composed with Eval */
+    // const it = EvalInterpreter(
+    //     JVPInterpreter,
+    //     userland,
+    //     [2.0],
+    //     [1.0]
+    // )
+    //console.log("jvp:", it);
+
+
+    /* Simple JVP, composed with Staging */
+    const traceJVP = StagingInterpreter(
+        (x: Tensor) => JVPInterpreter(userland, new Dual(null, x, 1.0)),
+        1
     )
 
-    console.log("jvp:", it);
-
-    // let next = it.next();
-    // while (!next.done) {
-    //     next = it.next();
-    //     console.log("Outer:", next.value);
-    // }
-
-
+    console.log(traceJVP.toString());
 };
 
 
