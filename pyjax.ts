@@ -147,23 +147,6 @@ export const derivative = (f: (...args: any[]) => any, x: number) => {
 //     )
 // }
 
-
-// class VJPTracer {
-//     interpreter: VJPInterpreter;
-//     var_: Var;
-
-//     constructor(interpreter: VJPInterpreter, var_: Var) {
-//         this.interpreter = interpreter;
-//         this.var_ = var_;
-//     }
-
-//     toString() {
-//         return this.var_;
-//     }
-// }
-
-
-
 // class VJPInterpreter implements Interpreter {
 //     prevInterpreter: Interpreter;
 //     equations: Equation[];
@@ -290,6 +273,21 @@ export const derivative = (f: (...args: any[]) => any, x: number) => {
 //     }
 // }
 
+// class VJPTracer {
+//     interpreter: VJPInterpreter;
+//     var_: Var;
+
+//     constructor(interpreter: VJPInterpreter, var_: Var) {
+//         this.interpreter = interpreter;
+//         this.var_ = var_;
+//     }
+
+//     toString() {
+//         return this.var_;
+//     }
+// }
+
+
 
 // export const vjp = (f: (...args: any[]) => any, ...primals: number[]): [number, Map<Var, number>] => {
 //     const vjpInterpreter = new VJPInterpreter(getInterpreter());
@@ -328,7 +326,7 @@ export const derivative = (f: (...args: any[]) => any, x: number) => {
 
 
 class Var { constructor(public ident: string) { } toString() { return this.ident; } };
-class Atom { constructor(public var_: Var | number) { } };
+class Atom { constructor(public var_: Var | number) { } toString() { return this.var_.toString(); } };
 
 class Equation {
     var_: Var;
@@ -338,6 +336,9 @@ class Equation {
         this.var_ = var_;
         this.op = op;
         this.args = args;
+    }
+    toString() {
+        return `Equation(${this.var_.toString()}, ${Op[this.op]}, ${this.args.map(a => a.toString()).join(", ")})`;
     }
 }
 
@@ -442,8 +443,9 @@ export const simplifyArith = (jaxpr: Jaxpr) => {
         //
         [Op.mul, ["_0", 1], Op.id, ["_0"]],
         [Op.mul, [1, "_0"], Op.id, ["_0"]],
-        [Op.mul, [0, "_0"], Op.id, ["_0"]],
-        [Op.mul, ["_0", 0], Op.id, ["_0"]],
+
+        [Op.mul, [0, "_0"], Op.id, [0]],
+        [Op.mul, ["_0", 0], Op.id, [0]],
     ];
 
 
@@ -528,22 +530,67 @@ export const simplifyArith = (jaxpr: Jaxpr) => {
 }
 
 
-const constantFold = (jaxpr: Jaxpr) => {
-    let evalInterpreter = new EvalInterpreter();
-    using _ = new WithInterpreter(evalInterpreter);
+// export const eliminateCommonSubexpressions = (jaxpr: Jaxpr) => {
+//     // walk the jaxpr forwards, hashing each equation
+//     // if a later equation matches a previously seen equation
+//     // replace the original with a call to id() of the previously seen equation's result var
+//     const newEquations: Equation[] = [];
+//     const hashEquation = (eqn: Equation) => {
+//         return eqn.op.toString() + '(' + eqn.args.map(a => a.toString()).join(",") + ')';
+//     }
+//     type EqnHash = string;
+//     const seenEquations = new Map<EqnHash, Var>();
+//     for (const eqn of jaxpr.equations) {
+//         const eqnHash = hashEquation(eqn);
+//         if (seenEquations.has(eqnHash)) {
+//             const prevResult = seenEquations.get(eqnHash)!;
+//             assert(prevResult);
+//             newEquations.push(new Equation(eqn.var_, Op.id, [prevResult]));
+//         } else {
+//             seenEquations.set(eqnHash, eqn.var_);
+//             newEquations.push(eqn);
+//         }
+//     }
+//     return new Jaxpr(jaxpr.parameters, newEquations, jaxpr.returnVal);
+// }
+
+export const eliminateAliases = (jaxpr: Jaxpr) => {
+    // walk the jaxpr forwards, collecting all insns of the form x1 = id(x0)
+    // replace all subsequent uses of x1 with x0 in parameters
+
+    // list of aliases, [lhs, rhs]
+    const aliases: [Var, Atom][] = [];
     const newEquations: Equation[] = [];
-    const env = new Map<Var, number>();
+
     for (const eqn of jaxpr.equations) {
-        const areAllArgsConstants = eqn.args.every(a => a instanceof Atom && typeof a.var_ === "number");
-        if (areAllArgsConstants) {
-            const args = eqn.args.map(a => a.var_);
-            const result = getInterpreter().interpret(eqn.op, ...args);
-            env.set(eqn.var_, result);
+        if (eqn.op === Op.id) {
+            assert(eqn.args.length === 1, "id requires 1 argument");
+            const rhs = eqn.args[0];
+            assert(rhs != null, "rhs is required. Got: " + eqn.toString());
+            const lhs = eqn.var_;
+            aliases.push([lhs, rhs]);
         } else {
-            newEquations.push(eqn);
+            const newArgs: Atom[] = [];
+            for (const arg of eqn.args) {
+                if (arg instanceof Var) {
+                    const alias = aliases.find(a => a[0] === arg);
+                    if (alias) {
+                        newArgs.push(alias[1]);
+                    } else {
+                        newArgs.push(arg);
+                    }
+                }
+            }
+            newEquations.push(new Equation(eqn.var_, eqn.op, newArgs));
         }
     }
 
+    const returnAlias = aliases.find(a => a[0].ident === (jaxpr.returnVal as Var).ident);
+    if (returnAlias) {
+        jaxpr.returnVal = returnAlias[1];
+    }
+
+    return new Jaxpr(jaxpr.parameters, newEquations, jaxpr.returnVal);
 }
 
 

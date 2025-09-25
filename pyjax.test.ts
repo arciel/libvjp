@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 
-import { mul, add, jvp, derivative, evalJaxpr, buildJaxpr, eliminateDeadCode, simplifyArith } from "./pyjax";
+import { mul, add, jvp, derivative, evalJaxpr, buildJaxpr, eliminateDeadCode, simplifyArith, eliminateAliases } from "./pyjax";
 
 
 const foo = (x: number) => {
@@ -57,19 +57,16 @@ test("Eval -> Stage -> Eval", () => {
     expect(evalJaxpr(fooJaxpr, 2.0)).toEqual(evalJaxpr(fooJaxprJitJaxpr, 2.0));
 })
 
-test("Jaxpr of JVP", () => {
+test("Optimization Passes", () => {
     const d1 = (x: number) => jvp(foo, x, 1.0)[1];
-    // console.log(d1(2.0));
     const d1Jaxpr = ((buildJaxpr(d1, 1)));
     const d1JaxprDead = eliminateDeadCode(d1Jaxpr);
     const d1JaxprSimplify = simplifyArith(d1JaxprDead);
-    console.log(d1Jaxpr);
-    console.log('----')
-    console.log(d1JaxprDead);
-    console.log('----')
-    console.log(d1JaxprSimplify);
-    // console.log(evalJaxpr(d1Jaxpr, 2.0));
-    // expect(evalJaxpr(d1Jaxpr, 2.0)).toEqual(d1(2.0));
+    const d1EliminateAliases = eliminateAliases(d1JaxprSimplify);
+    expect(evalJaxpr(d1Jaxpr, 2.0)).toEqual(d1(2.0));
+    expect(evalJaxpr(d1JaxprDead, 2.0)).toEqual(d1(2.0));
+    expect(evalJaxpr(d1JaxprSimplify, 2.0)).toEqual(d1(2.0));
+    expect(evalJaxpr(d1EliminateAliases, 2.0)).toEqual(d1(2.0));
 })
 
 
