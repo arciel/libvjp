@@ -6,6 +6,7 @@ import {
     JVPInterpreter,
     StagingInterpreter,
     eliminateDeadCode,
+    simplifyGeneric,
 } from "./src";
 import type { Tensor } from "./src";
 
@@ -60,8 +61,16 @@ const main = () => {
     console.log(traceJVP2.toString());
     console.log('--------------------------------');
 
-    console.log("Opt o Staging o JVP o JVP:");
+    console.log("DCE o Staging o JVP o JVP:");
     console.log((eliminateDeadCode(traceJVP2)).toString());
+    console.log('--------------------------------');
+
+    console.log("SG(strength=1) o DCE o JVP o JVP:");
+    console.log((simplifyGeneric(eliminateDeadCode(traceJVP2))).toString());
+    console.log('--------------------------------');
+
+    console.log("SG(strength=10) o DCE o JVP o JVP:");
+    console.log((simplifyGeneric(eliminateDeadCode(traceJVP2), 10)).toString());
     console.log('--------------------------------');
 };
 

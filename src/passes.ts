@@ -1,5 +1,5 @@
 import { assert } from "./util";
-import { Atom, Equation, Insn, Jaxpr, Op, VReg } from "./types";
+import { Atom, Equation, Insn, Jaxpr, Op, VReg, type Tensor } from "./types";
 
 export const eliminateDeadCode = (jaxpr: Jaxpr) => {
     const output = jaxpr.returnVal;
@@ -21,102 +21,84 @@ export const eliminateDeadCode = (jaxpr: Jaxpr) => {
     return new Jaxpr(jaxpr.parameters, newEquations.reverse(), output);
 };
 
-type PatternArg = number | string | null;
-type ReplacementArg = number | string;
-
+type PatternArg = Atom | string;
+type ReplacementArg = Atom | string;
 type RewriteRule = [Op, PatternArg[], Op, ReplacementArg[]];
 
+
+const _zero = new Atom(0);
+const _one = new Atom(1);
 const identityTable: RewriteRule[] = [
-    [Op.add, ["_0", 0], Op.id, ["_0"]],
-    [Op.add, [0, "_0"], Op.id, ["_0"]],
-    [Op.mul, ["_0", 1], Op.id, ["_0"]],
-    [Op.mul, [1, "_0"], Op.id, ["_0"]],
-    [Op.mul, [0, "_0"], Op.id, [0]],
-    [Op.mul, ["_0", 0], Op.id, [0]],
-    [Op.iif, [1, "_0", "_1"], Op.id, ["_0"]],
-    [Op.iif, [0, "_0", "_1"], Op.id, ["_1"]],
+    // additive identiy
+    [Op.add, ["_0", _zero], Op.id, ["_0"]],
+    [Op.add, [_zero, "_0"], Op.id, ["_0"]],
+    [Op.add, [_zero, _zero], Op.id, [_zero]],
+
+    // multiplicative identity
+    [Op.mul, ["_0", _one], Op.id, ["_0"]],
+    [Op.mul, [_one, "_0"], Op.id, ["_0"]],
+    [Op.mul, [_one, _one], Op.id, [_one]],
+
+    // multiplicative zero
+    [Op.mul, [_zero, "_0"], Op.id, [_zero]],
+    [Op.mul, ["_0", _zero], Op.id, [_zero]],
+    [Op.mul, [_zero, _zero], Op.id, [_zero]],
+
+    // simplify iif with known predicate
+    [Op.iif, [_one, "_0", "_1"], Op.id, ["_0"]],
+    [Op.iif, [_zero, "_0", "_1"], Op.id, ["_1"]],
 ];
 
-const unwrapAtom = (value: any) => (value instanceof Atom ? value.var_ : value);
-
-const argsEqual = (a: any, b: any) => {
-    const ua = unwrapAtom(a);
-    const ub = unwrapAtom(b);
-    if (typeof ua === "number" && typeof ub === "number") {
-        return ua === ub;
+const checkIfInsnMatchesRule = (insn: Insn, rule: RewriteRule) => {
+    const captures = new Map<string, any>();
+    if (insn.op !== rule[0]) {
+        return { captures, matched: false, op: null };
     }
-    return a === b;
-};
-
-const matchArg = (actual: any, pattern: PatternArg, captures: Map<string, any>) => {
-    if (pattern === null) {
-        return true;
+    if (insn.args.length !== rule[1].length) {
+        return { captures, matched: false, op: null };
     }
-
-    if (typeof pattern === "number") {
-        const value = unwrapAtom(actual);
-        return typeof value === "number" && value === pattern;
-    }
-
-    if (typeof pattern === "string") {
-        const key = pattern.startsWith("_") ? pattern.slice(1) : pattern;
-        if (captures.has(key)) {
-            return argsEqual(captures.get(key), actual);
+    for (let i = 0; i < rule[1].length; i++) {
+        const argPattern = rule[1][i];
+        assert(argPattern != null, "argPattern is required");
+        if (typeof argPattern === "string") {
+            // is a placeholder
+            captures.set(argPattern, insn.args[i]);
+            continue
+        } else {
+            const argActual = insn.args[i];
+            if (argActual.var_ === argPattern.var_) {
+                continue;
+            } else {
+                return { captures, matched: false, op: null };
+            }
         }
-        captures.set(key, actual);
-        return true;
     }
-
-    return false;
-};
-
-const instantiateArg = (spec: ReplacementArg, captures: Map<string, any>) => {
-    if (typeof spec === "number") {
-        return spec;
-    }
-
-    const key = spec.startsWith("_") ? spec.slice(1) : spec;
-    if (!captures.has(key)) {
-        throw new Error(`Missing capture for placeholder ${spec}`);
-    }
-    return captures.get(key);
-};
+    const replacedArgs = rule[3].map(a => typeof a === "string" ? captures.get(a) : a);
+    return { matched: true, op: rule[2], args: replacedArgs };
+}
 
 export const simplifyArith = (jaxpr: Jaxpr) => {
     const newEquations: Equation[] = [];
     for (const eqn of jaxpr.equations) {
-        let rewritten: Equation | null = null;
-        for (const [sourceOp, sourceArgs, targetOp, targetArgs] of identityTable) {
-            if (eqn.rhs.op !== sourceOp) {
-                continue;
+        let didRewrite = false;
+        for (const rule of identityTable) {
+            const { matched, op, args } = checkIfInsnMatchesRule(eqn.rhs, rule);
+            if (matched) {
+                assert(op != null, "op is required. Got: " + eqn.toString());
+                newEquations.push(new Equation(
+                    eqn.lhs,
+                    new Insn(op, args)
+                ));
+                didRewrite = true;
+                break;
             }
-
-            if (eqn.rhs.args.length !== sourceArgs.length) {
-                continue;
-            }
-
-            const captures = new Map<string, any>();
-            let matched = true;
-            for (let i = 0; i < sourceArgs.length; i++) {
-                if (!matchArg(eqn.rhs.args[i], sourceArgs[i] as PatternArg, captures)) {
-                    matched = false;
-                    break;
-                }
-            }
-
-            if (!matched) {
-                continue;
-            }
-
-            const replacedArgs = targetArgs.map(arg => instantiateArg(arg as ReplacementArg, captures));
-            rewritten = new Equation(eqn.lhs, new Insn(targetOp, replacedArgs as any));
-            break;
         }
-
-        newEquations.push(rewritten ?? eqn);
+        if (!didRewrite) {
+            newEquations.push(eqn);
+        }
     }
     return new Jaxpr(jaxpr.parameters, newEquations, jaxpr.returnVal);
-};
+}
 
 export const eliminateAliases = (jaxpr: Jaxpr) => {
     const aliases: [VReg, Atom][] = [];
@@ -153,3 +135,11 @@ export const eliminateAliases = (jaxpr: Jaxpr) => {
 
     return new Jaxpr(jaxpr.parameters, newEquations, jaxpr.returnVal);
 };
+
+export const simplifyGeneric = (jaxpr: Jaxpr, strength: number = 1) => {
+    let result = jaxpr;
+    for (let i = 0; i < strength; i++) {
+        result = eliminateAliases(simplifyArith(result));
+    }
+    return result;
+}
