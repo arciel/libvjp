@@ -1,5 +1,47 @@
 export type Tensor = number;
 
+
+enum DType {
+    f32 = "f32",
+    f16 = "f16",
+    bf16 = "bf16",
+    f8 = "f8",
+    mxfp4 = "mxfp4",
+}
+export class NTensor {
+    stride: number[];
+    shape: number[];
+    raw: ArrayBuffer;
+    dtype: DType;
+    constructor(raw: ArrayBuffer, shape: number[], stride: number[], dtype: DType) {
+        this.stride = stride;
+        this.shape = shape;
+        this.raw = raw
+        this.dtype = dtype;
+    }
+
+    numElements() {
+        return this.shape.reduce((acc, curr) => acc * curr, 1);
+    }
+
+    numBytes() {
+        return this.raw.byteLength;
+    }
+
+    shapeString() {
+        return `(${this.shape.join("×")})`;
+    }
+
+    strideString() {
+        return `(${this.stride.join(", ")})`;
+    }
+
+    toString() {
+        return `NTensor(dtype:${DType[this.dtype]}, shape:${this.shapeString()}, stride:${this.strideString()})`;
+    }
+
+}
+
 export enum Op {
     add = "add",
     mul = "mul",
@@ -8,55 +50,20 @@ export enum Op {
 }
 
 export class Insn {
-    constructor(public op: Op, public args: any[]) {}
+    constructor(public op: Op, public args: any[]) { }
 
     toString() {
         return `Insn(${this.op}: ${this.args.map(String).join(", ")})`;
     }
 }
 
-export class VReg {
-    constructor(public ident: string) {}
+/// 
+type UserlandYield = Insn;
+type UserlandReturn = unknown;
+type UserlandNext = unknown;
+export type UserlandGen = Generator<UserlandYield, UserlandReturn, UserlandNext>;
+/*
 
-    toString() {
-        return `VReg(${this.ident})`;
-    }
-}
-
-export class Atom {
-    constructor(public var_: VReg | Tensor) {}
-
-    toString() {
-        return `Atom(${this.var_.toString()})`;
-    }
-}
-
-export class Equation {
-    constructor(public lhs: VReg, public rhs: Insn) {}
-
-    toString() {
-        return `Equation(${this.lhs.toString()} = ${this.rhs.toString()})`;
-    }
-}
-
-export class Jaxpr {
-    constructor(
-        public parameters: VReg[],
-        public equations: Equation[],
-        public returnVal: VReg,
-    ) {}
-
-    toString() {
-        const lines: string[] = [];
-        const parameterList = this.parameters.join(", ");
-        lines.push(`(define-function (${parameterList})`);
-        let i = 0;
-        for (const eqn of this.equations) {
-            lines.push(`\t${i.toString().padStart(5, "0")}: ${eqn.lhs.toString()} = ${eqn.rhs.toString()}`);
-            i++;
-        }
-        lines.push(`\treturn ${this.returnVal}`);
-        lines.push(")");
-        return lines.join("\n");
-    }
-}
+*/
+type UserlandArgs = (Tensor & unknown)[];
+export type UserlandFunction = (...args: UserlandArgs) => UserlandGen;

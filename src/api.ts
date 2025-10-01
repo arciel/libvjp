@@ -1,6 +1,6 @@
 import { Insn, Op } from "./types";
 
-type Operand = number | { toString(): string };
+type Operand = number | unknown;
 
 export const add = (x: Operand, y: Operand) => new Insn(Op.add, [x, y]);
 export const mul = (x: Operand, y: Operand) => new Insn(Op.mul, [x, y]);

@@ -1,14 +1,14 @@
 import { assert } from "../util";
-import { add, iif, mul } from "../ops";
-import { Op, Tensor } from "../types";
+import { add, iif, mul } from "../api";
+import { Op } from "../types";
+import type { Tensor, UserlandFunction } from "../types";
+import { evalInterpreter } from "./evalInterpreter";
 
 export class Dual {
     constructor(public interpreter: symbol, public primal: any, public tangent: Tensor = 0.0) {}
 }
 
-type GeneratorFunction = (...args: any[]) => Generator<any, any, any>;
-
-export function* jvpInterpreter(f: GeneratorFunction, primals: any[], tangents: Tensor[]) {
+export function* jvpInterpreter(f: UserlandFunction, primals: any[], tangents: Tensor[]): any {
     const interpreterId = Symbol();
 
     const lift = (p: any, t: Tensor) => {
@@ -74,5 +74,14 @@ export function* jvpInterpreter(f: GeneratorFunction, primals: any[], tangents: 
     }
 
     assert(next.value != null, "Invalid operation. Got " + next.value);
+    assert(next.value instanceof Dual, "Invalid operation. Got " + next.value);
     return next.value.tangent;
+}
+
+export const derivative = (f: UserlandFunction, x: Tensor) => {
+    const values = evalInterpreter(
+        (x) => jvpInterpreter(f, [x], [1.0]),
+        x
+    );
+    return values;
 }

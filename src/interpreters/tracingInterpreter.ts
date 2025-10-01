@@ -1,9 +1,54 @@
-import { Atom, Equation, Insn, Jaxpr, VReg } from "../types";
+import { Insn, type UserlandFunction, type Tensor } from "../types";
 import { assert } from "../util";
+import { evalInterpreter } from "./evalInterpreter";
 
-type GeneratorFunction = (...args: any[]) => Generator<Insn, any, any>;
+export class VReg {
+    constructor(public ident: string) { }
 
-export function tracingInterpreter(f: GeneratorFunction, numArgs: number) {
+    toString() {
+        return `VReg(${this.ident})`;
+    }
+}
+
+export class Atom {
+    constructor(public var_: VReg | Tensor) { }
+
+    toString() {
+        return `Atom(${this.var_.toString()})`;
+    }
+}
+
+export class Equation {
+    constructor(public lhs: VReg, public rhs: Insn) { }
+
+    toString() {
+        return `Equation(${this.lhs.toString()} = ${this.rhs.toString()})`;
+    }
+}
+
+export class Jaxpr {
+    constructor(
+        public parameters: VReg[],
+        public equations: Equation[],
+        public returnVal: VReg,
+    ) { }
+
+    toString() {
+        const lines: string[] = [];
+        const parameterList = this.parameters.join(", ");
+        lines.push(`(define-function (${parameterList})`);
+        let i = 0;
+        for (const eqn of this.equations) {
+            lines.push(`\t${i.toString().padStart(5, "0")}: ${eqn.lhs.toString()} = ${eqn.rhs.toString()}`);
+            i++;
+        }
+        lines.push(`\treturn ${this.returnVal}`);
+        lines.push(")");
+        return lines.join("\n");
+    }
+}
+
+export function tracingInterpreter(f: UserlandFunction, numArgs: number) {
     let symbolCounter = 0;
     const inputs = Array.from({ length: numArgs }, () => new VReg(`x${symbolCounter++}`));
     const trace: Equation[] = [];
@@ -21,7 +66,8 @@ export function tracingInterpreter(f: GeneratorFunction, numArgs: number) {
     return new Jaxpr(inputs, trace, next.value as VReg);
 }
 
-export function* replayTrace(jaxpr: Jaxpr, ...args: Atom[]): any {
+export function* replayTrace(jaxpr: Jaxpr, ...args0: unknown[]): any {
+    const args = args0.map((a: any) => (a instanceof Atom ? a : new Atom(a)));
     const env = new Map<VReg, Atom>();
     for (let i = 0; i < jaxpr.parameters.length; i++) {
         const param = jaxpr.parameters[i];
@@ -37,4 +83,11 @@ export function* replayTrace(jaxpr: Jaxpr, ...args: Atom[]): any {
         env.set(eqn.lhs, new Atom(result));
     }
     return evalAtom(new Atom(jaxpr.returnVal))?.var_;
+}
+
+export const evalTrace = (jaxpr: Jaxpr, ...args: unknown[]) => {
+    return evalInterpreter(
+        (x) => replayTrace(jaxpr, x),
+        ...args
+    );
 }

@@ -1,5 +1,6 @@
-import { assert } from "./util";
-import { Atom, Equation, Insn, Jaxpr, Op, VReg, type Tensor } from "./types";
+import { assert } from "../util";
+import { type Tensor, Op, Insn } from "../types";
+import { Jaxpr, Equation, VReg, Atom } from "./tracingInterpreter";
 
 export const eliminateDeadCode = (jaxpr: Jaxpr) => {
     const output = jaxpr.returnVal;

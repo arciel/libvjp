@@ -1,18 +1,15 @@
 import { expect, test } from "bun:test";
 
-import {
-    add,
-    mul,
-    EvalInterpreter,
-    JVPInterpreter,
-    StagingInterpreter,
-    eliminateDeadCode,
-} from "../src";
-import type { Tensor } from "../src";
+import { add, mul } from "../src/api";
+import { evalInterpreter } from "../src/interpreters/evalInterpreter";
+import { derivative, jvpInterpreter } from "../src/interpreters/jvpInterpreter";
+import { replayTrace, tracingInterpreter } from "../src/interpreters/tracingInterpreter";
+import { eliminateDeadCode, eliminateAliases, simplifyArith, simplifyGeneric } from "../src/interpreters/passes";
 
-type GeneratorResult<T> = Generator<any, T, any>;
+import type { Tensor, UserlandFunction } from "../src/types";
+import type { NTensor, UserlandGen } from "../src/types";
 
-function* userland(x: Tensor): GeneratorResult<Tensor> {
+function* userland(x: Tensor): UserlandGen {
     const xsq = yield mul(x, x);
     const x2 = yield mul(x, 2);
     const t1 = yield add(xsq, x2);
@@ -21,11 +18,11 @@ function* userland(x: Tensor): GeneratorResult<Tensor> {
 }
 
 test("Eval interpreter composes with nested JVP", () => {
-    const value = EvalInterpreter(
+    const value = evalInterpreter(
         (x0: Tensor) => {
-            return JVPInterpreter(
+            return jvpInterpreter(
                 (x1: Tensor) => {
-                    return JVPInterpreter(
+                    return jvpInterpreter(
                         userland,
                         [x1],
                         [1.0]
@@ -42,11 +39,11 @@ test("Eval interpreter composes with nested JVP", () => {
 });
 
 test("Staging interpreter matches the recorded trace", () => {
-    const trace = StagingInterpreter(
+    const trace = tracingInterpreter(
         (x0: Tensor) => {
-            return JVPInterpreter(
+            return jvpInterpreter(
                 (x1: Tensor) => {
-                    return JVPInterpreter(
+                    return jvpInterpreter(
                         userland,
                         [x1],
                         [1.0]
@@ -101,11 +98,11 @@ test("Staging interpreter matches the recorded trace", () => {
 });
 
 test("Dead code elimination retains semantics", () => {
-    const trace = StagingInterpreter(
+    const trace = tracingInterpreter(
         (x0: Tensor) => {
-            return JVPInterpreter(
+            return jvpInterpreter(
                 (x1: Tensor) => {
-                    return JVPInterpreter(
+                    return jvpInterpreter(
                         userland,
                         [x1],
                         [1.0]
@@ -139,4 +136,30 @@ test("Dead code elimination retains semantics", () => {
 \t00015: VReg(v36) = Insn(add: Atom(VReg(v32)), Atom(0))
 \treturn VReg(v36)
 )`);
+});
+
+// Eval
+// test("Eval Interpreter", () => {
+//     expect(foo(2.0)).toBe(9);
+// });
+
+
+// JVP
+test("JVP Interpreter", () => {
+    expect(derivative(userland, 2.0)).toBe(6);
+});
+
+
+test("Staging Interpreter", () => {
+    const jaxpr = tracingInterpreter(userland, 1);
+    expect(jaxpr !== null).toBe(true);
+});
+
+
+test("Eval Jaxpr", () => {
+    const jaxpr = tracingInterpreter(userland, 1);
+    expect(evalInterpreter(
+        (x) => replayTrace(jaxpr, x),
+        2.0
+    )).toBe(9);
 });

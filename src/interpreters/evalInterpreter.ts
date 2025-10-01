@@ -1,9 +1,7 @@
 import { assert } from "../util";
-import { Insn, Op } from "../types";
+import { Insn, Op, type UserlandFunction } from "../types";
 
-type GeneratorFunction = (...args: any[]) => Generator<Insn, any, any>;
-
-export function evalInterpreter(f: GeneratorFunction, ...args: any[]) {
+export function evalInterpreter(f: UserlandFunction, ...args: any[]) {
     const it = f(...args);
     let next = it.next();
     while (!next.done) {
